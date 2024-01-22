@@ -15,6 +15,9 @@ import { mdbTestExtension } from '../stubbableMdbExtension';
 import { DatabaseTreeItem, DocumentTreeItem } from '../../../explorer';
 import { DataServiceStub } from '../stubs';
 
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { version } = require('../../../../package.json');
+
 const expect = chai.expect;
 
 chai.use(sinonChai);
@@ -129,7 +132,7 @@ suite('Telemetry Controller Test Suite', () => {
         event: 'Command Run',
         properties: {
           command: 'mdb.addConnection',
-          extension_version: '0.0.0-dev.0',
+          extension_version: version,
         },
       })
     );
@@ -149,8 +152,8 @@ suite('Telemetry Controller Test Suite', () => {
           is_used_connect_screen: false,
           is_used_command_palette: true,
           is_used_saved_connection: false,
-          vscode_mdb_extension_version: '0.0.0-dev.0',
-          extension_version: '0.0.0-dev.0',
+          vscode_mdb_extension_version: version,
+          extension_version: version,
         },
       })
     );
@@ -170,8 +173,8 @@ suite('Telemetry Controller Test Suite', () => {
           is_used_connect_screen: true,
           is_used_command_palette: false,
           is_used_saved_connection: false,
-          vscode_mdb_extension_version: '0.0.0-dev.0',
-          extension_version: '0.0.0-dev.0',
+          vscode_mdb_extension_version: version,
+          extension_version: version,
         },
       })
     );
@@ -191,8 +194,8 @@ suite('Telemetry Controller Test Suite', () => {
           is_used_connect_screen: false,
           is_used_command_palette: false,
           is_used_saved_connection: true,
-          vscode_mdb_extension_version: '0.0.0-dev.0',
-          extension_version: '0.0.0-dev.0',
+          vscode_mdb_extension_version: version,
+          extension_version: version,
         },
       })
     );
@@ -209,7 +212,7 @@ suite('Telemetry Controller Test Suite', () => {
         properties: {
           source: 'treeview',
           success: true,
-          extension_version: '0.0.0-dev.0',
+          extension_version: version,
         },
       })
     );
@@ -223,7 +226,7 @@ suite('Telemetry Controller Test Suite', () => {
       sinon.match({
         anonymousId,
         event: 'Document Edited',
-        properties: { source: 'playground', extension_version: '0.0.0-dev.0' },
+        properties: { source: 'playground', extension_version: version },
       })
     );
   });
@@ -241,7 +244,7 @@ suite('Telemetry Controller Test Suite', () => {
           type: 'other',
           partial: false,
           error: false,
-          extension_version: '0.0.0-dev.0',
+          extension_version: version,
         },
       })
     );
@@ -261,7 +264,7 @@ suite('Telemetry Controller Test Suite', () => {
         event: 'Playground Loaded',
         properties: {
           file_type: 'mongodb',
-          extension_version: '0.0.0-dev.0',
+          extension_version: version,
         },
       })
     );
@@ -280,7 +283,7 @@ suite('Telemetry Controller Test Suite', () => {
         event: 'Playground Loaded',
         properties: {
           file_type: 'mongodbjs',
-          extension_version: '0.0.0-dev.0',
+          extension_version: version,
         },
       })
     );
@@ -295,7 +298,7 @@ suite('Telemetry Controller Test Suite', () => {
         event: 'Playground Saved',
         properties: {
           file_type: 'mongodbjs',
-          extension_version: '0.0.0-dev.0',
+          extension_version: version,
         },
       })
     );
@@ -311,7 +314,7 @@ suite('Telemetry Controller Test Suite', () => {
         properties: {
           screen: 'helpPanel',
           link_id: 'linkId',
-          extension_version: '0.0.0-dev.0',
+          extension_version: version,
         },
       })
     );
@@ -335,7 +338,7 @@ suite('Telemetry Controller Test Suite', () => {
           with_import_statements: false,
           with_builders: false,
           with_driver_syntax: false,
-          extension_version: '0.0.0-dev.0',
+          extension_version: version,
         },
       })
     );
@@ -361,7 +364,7 @@ suite('Telemetry Controller Test Suite', () => {
           with_import_statements: false,
           with_builders: false,
           with_driver_syntax: false,
-          extension_version: '0.0.0-dev.0',
+          extension_version: version,
         },
       })
     );
@@ -370,7 +373,6 @@ suite('Telemetry Controller Test Suite', () => {
   suite('prepare playground result types', () => {
     test('convert AggregationCursor shellApiType to aggregation telemetry type', () => {
       const res = {
-        outputLines: [],
         result: {
           namespace: null,
           type: 'AggregationCursor',
@@ -384,7 +386,6 @@ suite('Telemetry Controller Test Suite', () => {
 
     test('convert BulkWriteResult shellApiType to other telemetry type', () => {
       const res = {
-        outputLines: [],
         result: {
           namespace: null,
           type: 'BulkWriteResult',
@@ -398,7 +399,6 @@ suite('Telemetry Controller Test Suite', () => {
 
     test('convert Collection shellApiType to other telemetry type', () => {
       const res = {
-        outputLines: [],
         result: {
           namespace: null,
           type: 'Collection',
@@ -412,7 +412,6 @@ suite('Telemetry Controller Test Suite', () => {
 
     test('convert Cursor shellApiType to other telemetry type', () => {
       const res = {
-        outputLines: [],
         result: {
           namespace: null,
           type: 'Cursor',
@@ -426,7 +425,6 @@ suite('Telemetry Controller Test Suite', () => {
 
     test('convert Database shellApiType to other telemetry type', () => {
       const res = {
-        outputLines: [],
         result: {
           namespace: null,
           type: 'Database',
@@ -440,7 +438,6 @@ suite('Telemetry Controller Test Suite', () => {
 
     test('convert DeleteResult shellApiType to other telemetry type', () => {
       const res = {
-        outputLines: [],
         result: {
           namespace: null,
           type: 'DeleteResult',
@@ -454,7 +451,6 @@ suite('Telemetry Controller Test Suite', () => {
 
     test('convert InsertManyResult shellApiType to other telemetry type', () => {
       const res = {
-        outputLines: [],
         result: {
           namespace: null,
           type: 'InsertManyResult',
@@ -468,7 +464,6 @@ suite('Telemetry Controller Test Suite', () => {
 
     test('convert InsertOneResult shellApiType to other telemetry type', () => {
       const res = {
-        outputLines: [],
         result: {
           namespace: null,
           type: 'InsertOneResult',
@@ -482,7 +477,6 @@ suite('Telemetry Controller Test Suite', () => {
 
     test('convert ReplicaSet shellApiType to other telemetry type', () => {
       const res = {
-        outputLines: [],
         result: {
           namespace: null,
           type: 'ReplicaSet',
@@ -496,7 +490,6 @@ suite('Telemetry Controller Test Suite', () => {
 
     test('convert Shard shellApiType to other telemetry type', () => {
       const res = {
-        outputLines: [],
         result: {
           namespace: null,
           type: 'Shard',
@@ -510,7 +503,6 @@ suite('Telemetry Controller Test Suite', () => {
 
     test('convert ShellApi shellApiType to other telemetry type', () => {
       const res = {
-        outputLines: [],
         result: {
           namespace: null,
           type: 'ShellApi',
@@ -524,7 +516,6 @@ suite('Telemetry Controller Test Suite', () => {
 
     test('convert UpdateResult shellApiType to other telemetry type', () => {
       const res = {
-        outputLines: [],
         result: {
           namespace: null,
           type: 'UpdateResult',
@@ -538,7 +529,6 @@ suite('Telemetry Controller Test Suite', () => {
 
     test('return other telemetry type if evaluation returns a string', () => {
       const res = {
-        outputLines: [],
         result: {
           namespace: null,
           type: null,
@@ -564,7 +554,7 @@ suite('Telemetry Controller Test Suite', () => {
           event: 'Playground Created',
           properties: {
             playground_type: 'search',
-            extension_version: '0.0.0-dev.0',
+            extension_version: version,
           },
         })
       );
@@ -589,7 +579,7 @@ suite('Telemetry Controller Test Suite', () => {
           event: 'Playground Created',
           properties: {
             playground_type: 'createCollection',
-            extension_version: '0.0.0-dev.0',
+            extension_version: version,
           },
         })
       );
@@ -606,7 +596,7 @@ suite('Telemetry Controller Test Suite', () => {
           event: 'Playground Created',
           properties: {
             playground_type: 'createDatabase',
-            extension_version: '0.0.0-dev.0',
+            extension_version: version,
           },
         })
       );
@@ -624,7 +614,7 @@ suite('Telemetry Controller Test Suite', () => {
           event: 'Playground Created',
           properties: {
             playground_type: 'index',
-            extension_version: '0.0.0-dev.0',
+            extension_version: version,
           },
         })
       );
@@ -661,7 +651,7 @@ suite('Telemetry Controller Test Suite', () => {
           event: 'Playground Created',
           properties: {
             playground_type: 'cloneDocument',
-            extension_version: '0.0.0-dev.0',
+            extension_version: version,
           },
         })
       );
@@ -676,7 +666,7 @@ suite('Telemetry Controller Test Suite', () => {
           event: 'Playground Created',
           properties: {
             playground_type: 'crud',
-            extension_version: '0.0.0-dev.0',
+            extension_version: version,
           },
         })
       );
@@ -693,7 +683,7 @@ suite('Telemetry Controller Test Suite', () => {
           event: 'Playground Created',
           properties: {
             playground_type: 'crud',
-            extension_version: '0.0.0-dev.0',
+            extension_version: version,
           },
         })
       );
@@ -710,7 +700,7 @@ suite('Telemetry Controller Test Suite', () => {
           event: 'Playground Created',
           properties: {
             playground_type: 'crud',
-            extension_version: '0.0.0-dev.0',
+            extension_version: version,
           },
         })
       );

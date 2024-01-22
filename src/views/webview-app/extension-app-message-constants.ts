@@ -1,5 +1,4 @@
-import type LegacyConnectionModel from './connection-model/legacy-connection-model';
-import type { FilePickerActionTypes } from './store/actions';
+import type { ConnectionOptions } from 'mongodb-data-service';
 
 export enum CONNECTION_STATUS {
   LOADING = 'LOADING', // When the connection status has not yet been shared from the extension.
@@ -12,18 +11,24 @@ export enum CONNECTION_STATUS {
 export const VSCODE_EXTENSION_SEGMENT_ANONYMOUS_ID =
   'VSCODE_EXTENSION_SEGMENT_ANONYMOUS_ID';
 
+export const VSCODE_EXTENSION_OIDC_DEVICE_AUTH_ID =
+  'VSCODE_EXTENSION_OIDC_DEVICE_AUTH_ID';
+
 export enum MESSAGE_TYPES {
   CONNECT = 'CONNECT',
+  CANCEL_CONNECT = 'CANCEL_CONNECT',
   CONNECT_RESULT = 'CONNECT_RESULT',
+  CONNECTION_FORM_OPENED = 'CONNECTION_FORM_OPENED',
   CONNECTION_STATUS_MESSAGE = 'CONNECTION_STATUS_MESSAGE',
+  OPEN_EDIT_CONNECTION = 'OPEN_EDIT_CONNECTION',
+  EDIT_AND_CONNECT_CONNECTION = 'EDIT_AND_CONNECT_CONNECTION',
   EXTENSION_LINK_CLICKED = 'EXTENSION_LINK_CLICKED',
   CREATE_NEW_PLAYGROUND = 'CREATE_NEW_PLAYGROUND',
-  FILE_PICKER_RESULTS = 'FILE_PICKER_RESULTS',
   GET_CONNECTION_STATUS = 'GET_CONNECTION_STATUS',
   OPEN_CONNECTION_STRING_INPUT = 'OPEN_CONNECTION_STRING_INPUT',
-  OPEN_FILE_PICKER = 'OPEN_FILE_PICKER',
   OPEN_TRUSTED_LINK = 'OPEN_TRUSTED_LINK',
   RENAME_ACTIVE_CONNECTION = 'RENAME_ACTIVE_CONNECTION',
+  THEME_CHANGED = 'THEME_CHANGED',
 }
 
 interface BasicWebviewMessage {
@@ -34,23 +39,50 @@ export interface CreateNewPlaygroundMessage extends BasicWebviewMessage {
   command: MESSAGE_TYPES.CREATE_NEW_PLAYGROUND;
 }
 
+export interface ConnectionFormOpenedMessage extends BasicWebviewMessage {
+  command: MESSAGE_TYPES.CONNECTION_FORM_OPENED;
+}
+
 export interface ConnectionStatusMessage extends BasicWebviewMessage {
   command: MESSAGE_TYPES.CONNECTION_STATUS_MESSAGE;
   connectionStatus: CONNECTION_STATUS;
   activeConnectionName: string;
 }
 
+export interface OpenEditConnectionMessage extends BasicWebviewMessage {
+  command: MESSAGE_TYPES.OPEN_EDIT_CONNECTION;
+  connection: {
+    id: string;
+    name: string;
+    connectionOptions: ConnectionOptions;
+  };
+}
+
+export interface EditAndConnectConnection extends BasicWebviewMessage {
+  command: MESSAGE_TYPES.EDIT_AND_CONNECT_CONNECTION;
+  connectionInfo: {
+    id: string;
+    connectionOptions: ConnectionOptions;
+  };
+}
+
 export interface ConnectMessage extends BasicWebviewMessage {
   command: MESSAGE_TYPES.CONNECT;
-  connectionModel: LegacyConnectionModel;
-  connectionAttemptId: string;
+  connectionInfo: {
+    id: string;
+    connectionOptions: ConnectionOptions;
+  };
+}
+
+export interface CancelConnectMessage extends BasicWebviewMessage {
+  command: MESSAGE_TYPES.CANCEL_CONNECT;
 }
 
 export interface ConnectResultsMessage extends BasicWebviewMessage {
   command: MESSAGE_TYPES.CONNECT_RESULT;
   connectionSuccess: boolean;
   connectionMessage: string;
-  connectionAttemptId: string;
+  connectionId: string;
 }
 
 export interface GetConnectionStatusMessage extends BasicWebviewMessage {
@@ -59,19 +91,6 @@ export interface GetConnectionStatusMessage extends BasicWebviewMessage {
 
 export interface OpenConnectionStringInputMessage extends BasicWebviewMessage {
   command: MESSAGE_TYPES.OPEN_CONNECTION_STRING_INPUT;
-}
-
-// Note: In the app this is tightly coupled with 'externals.ts'.
-export interface OpenFilePickerMessage extends BasicWebviewMessage {
-  command: MESSAGE_TYPES.OPEN_FILE_PICKER;
-  action: FilePickerActionTypes;
-  multi: boolean;
-}
-
-export interface FilePickerResultsMessage extends BasicWebviewMessage {
-  command: MESSAGE_TYPES.FILE_PICKER_RESULTS;
-  action: FilePickerActionTypes;
-  files: string[] | undefined;
 }
 
 export interface LinkClickedMessage extends BasicWebviewMessage {
@@ -89,17 +108,25 @@ export interface RenameConnectionMessage extends BasicWebviewMessage {
   command: MESSAGE_TYPES.RENAME_ACTIVE_CONNECTION;
 }
 
+export interface ThemeChangedMessage extends BasicWebviewMessage {
+  command: MESSAGE_TYPES.THEME_CHANGED;
+  darkMode: boolean;
+}
+
 export type MESSAGE_FROM_WEBVIEW_TO_EXTENSION =
   | ConnectMessage
+  | CancelConnectMessage
+  | ConnectionFormOpenedMessage
   | CreateNewPlaygroundMessage
   | GetConnectionStatusMessage
   | LinkClickedMessage
   | OpenConnectionStringInputMessage
-  | OpenFilePickerMessage
   | OpenTrustedLinkMessage
-  | RenameConnectionMessage;
+  | RenameConnectionMessage
+  | EditAndConnectConnection;
 
 export type MESSAGE_FROM_EXTENSION_TO_WEBVIEW =
   | ConnectResultsMessage
-  | FilePickerResultsMessage
-  | ConnectionStatusMessage;
+  | ConnectionStatusMessage
+  | ThemeChangedMessage
+  | OpenEditConnectionMessage;

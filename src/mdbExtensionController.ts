@@ -38,6 +38,8 @@ import type PlaygroundsTreeItem from './explorer/playgroundsTreeItem';
 import PlaygroundResultProvider from './editors/playgroundResultProvider';
 import WebviewController from './views/webviewController';
 import { createIdFactory, generateId } from './utils/objectIdHelper';
+import { ConnectionStorage } from './storage/connectionStorage';
+import type StreamProcessorTreeItem from './explorer/streamProcessorTreeItem';
 
 // This class is the top-level controller for our extension.
 // Commands which the extensions handles are defined in the function `activate`.
@@ -45,6 +47,7 @@ export default class MDBExtensionController implements vscode.Disposable {
   _playgroundSelectedCodeActionProvider: PlaygroundSelectedCodeActionProvider;
   _playgroundDiagnosticsCodeActionProvider: PlaygroundDiagnosticsCodeActionProvider;
   _connectionController: ConnectionController;
+  _connectionStorage: ConnectionStorage;
   _context: vscode.ExtensionContext;
   _editorsController: EditorsController;
   _playgroundController: PlaygroundController;
@@ -68,6 +71,9 @@ export default class MDBExtensionController implements vscode.Disposable {
     this._context = context;
     this._statusView = new StatusView(context);
     this._storageController = new StorageController(context);
+    this._connectionStorage = new ConnectionStorage({
+      storageController: this._storageController,
+    });
     this._telemetryService = new TelemetryService(
       this._storageController,
       context,
@@ -150,12 +156,14 @@ export default class MDBExtensionController implements vscode.Disposable {
     // Register our extension's commands. These are the event handlers and
     // control the functionality of our extension.
     // ------ CONNECTION ------ //
-    this.registerCommand(EXTENSION_COMMANDS.MDB_OPEN_OVERVIEW_PAGE, () =>
-      this._webviewController.openWebview(this._context)
-    );
-    this.registerCommand(EXTENSION_COMMANDS.MDB_CONNECT, () =>
-      this._webviewController.openWebview(this._context)
-    );
+    this.registerCommand(EXTENSION_COMMANDS.MDB_OPEN_OVERVIEW_PAGE, () => {
+      this._webviewController.openWebview(this._context);
+      return Promise.resolve(true);
+    });
+    this.registerCommand(EXTENSION_COMMANDS.MDB_CONNECT, () => {
+      this._webviewController.openWebview(this._context);
+      return Promise.resolve(true);
+    });
     this.registerCommand(EXTENSION_COMMANDS.MDB_CONNECT_WITH_URI, () =>
       this._connectionController.connectWithURI()
     );
@@ -282,18 +290,22 @@ export default class MDBExtensionController implements vscode.Disposable {
   }
 
   registerTreeViewCommands(): void {
-    this.registerCommand(EXTENSION_COMMANDS.MDB_ADD_CONNECTION, () =>
-      this._webviewController.openWebview(this._context)
-    );
+    this.registerCommand(EXTENSION_COMMANDS.MDB_ADD_CONNECTION, () => {
+      this._webviewController.openWebview(this._context);
+      return Promise.resolve(true);
+    });
     this.registerCommand(EXTENSION_COMMANDS.MDB_ADD_CONNECTION_WITH_URI, () =>
       this._connectionController.connectWithURI()
     );
     this.registerCommand(
       EXTENSION_COMMANDS.MDB_CONNECT_TO_CONNECTION_TREE_VIEW,
-      (connectionTreeItem: ConnectionTreeItem) =>
-        this._connectionController.connectWithConnectionId(
-          connectionTreeItem.connectionId
-        )
+      async (connectionTreeItem: ConnectionTreeItem) => {
+        const { successfullyConnected } =
+          await this._connectionController.connectWithConnectionId(
+            connectionTreeItem.connectionId
+          );
+        return successfullyConnected;
+      }
     );
     this.registerCommand(
       EXTENSION_COMMANDS.MDB_DISCONNECT_FROM_CONNECTION_TREE_VIEW,
@@ -312,6 +324,7 @@ export default class MDBExtensionController implements vscode.Disposable {
           databases: true,
           collections: true,
           fields: true,
+          streamProcessors: true,
         });
 
         return true;
@@ -335,6 +348,31 @@ export default class MDBExtensionController implements vscode.Disposable {
       EXTENSION_COMMANDS.MDB_REMOVE_CONNECTION_TREE_VIEW,
       (element: ConnectionTreeItem) =>
         this._connectionController.removeMongoDBConnection(element.connectionId)
+    );
+    this.registerCommand(
+      EXTENSION_COMMANDS.MDB_EDIT_CONNECTION,
+      (element: ConnectionTreeItem) => {
+        const connectionOptions =
+          this._connectionController.getConnectionConnectionOptions(
+            element.connectionId
+          );
+
+        if (!connectionOptions) {
+          return Promise.resolve(false);
+        }
+
+        void this._webviewController.openEditConnection({
+          connection: {
+            id: element.connectionId,
+            name: this._connectionController.getSavedConnectionName(
+              element.connectionId
+            ),
+            connectionOptions,
+          },
+          context: this._context,
+        });
+        return Promise.resolve(true);
+      }
     );
     this.registerCommand(
       EXTENSION_COMMANDS.MDB_RENAME_CONNECTION,
@@ -659,6 +697,95 @@ export default class MDBExtensionController implements vscode.Disposable {
         return true;
       }
     );
+    this.registerAtlasStreamsTreeViewCommands();
+  }
+
+  registerAtlasStreamsTreeViewCommands() {
+    this.registerCommand(
+      EXTENSION_COMMANDS.MDB_ADD_STREAM_PROCESSOR,
+      async (element: ConnectionTreeItem): Promise<boolean> => {
+        if (!element) {
+          void vscode.window.showErrorMessage(
+            'Please wait for the connection to finish loading before adding a stream processor.'
+          );
+
+          return false;
+        }
+
+        if (
+          element.connectionId !==
+          this._connectionController.getActiveConnectionId()
+        ) {
+          void vscode.window.showErrorMessage(
+            'Please connect to this connection before adding a stream processor.'
+          );
+
+          return false;
+        }
+
+        if (this._connectionController.isDisconnecting()) {
+          void vscode.window.showErrorMessage(
+            'Unable to add stream processor: currently disconnecting.'
+          );
+
+          return false;
+        }
+
+        if (this._connectionController.isConnecting()) {
+          void vscode.window.showErrorMessage(
+            'Unable to add stream processor: currently connecting.'
+          );
+
+          return false;
+        }
+
+        return this._playgroundController.createPlaygroundForCreateStreamProcessor(
+          element
+        );
+      }
+    );
+    this.registerCommand(
+      EXTENSION_COMMANDS.MDB_START_STREAM_PROCESSOR,
+      async (element: StreamProcessorTreeItem): Promise<boolean> => {
+        const started = await element.onStartClicked();
+        if (started) {
+          void vscode.window.showInformationMessage(
+            'Stream processor successfully started.'
+          );
+          // Refresh explorer view after a processor is started.
+          this._explorerController.refresh();
+        }
+        return started;
+      }
+    );
+    this.registerCommand(
+      EXTENSION_COMMANDS.MDB_STOP_STREAM_PROCESSOR,
+      async (element: StreamProcessorTreeItem): Promise<boolean> => {
+        const stopped = await element.onStopClicked();
+        if (stopped) {
+          void vscode.window.showInformationMessage(
+            'Stream processor successfully stopped.'
+          );
+          // Refresh explorer view after a processor is stopped.
+          this._explorerController.refresh();
+        }
+        return stopped;
+      }
+    );
+    this.registerCommand(
+      EXTENSION_COMMANDS.MDB_DROP_STREAM_PROCESSOR,
+      async (element: StreamProcessorTreeItem): Promise<boolean> => {
+        const dropped = await element.onDropClicked();
+        if (dropped) {
+          void vscode.window.showInformationMessage(
+            'Stream processor successfully dropped.'
+          );
+          // Refresh explorer view after a processor is dropped.
+          this._explorerController.refresh();
+        }
+        return dropped;
+      }
+    );
   }
 
   showOverviewPageIfRecentlyInstalled(): void {
@@ -669,7 +796,7 @@ export default class MDBExtensionController implements vscode.Disposable {
     // Show the overview page when it hasn't been show to the
     // user yet, and they have no saved connections.
     if (!hasBeenShownViewAlready) {
-      if (!this._storageController.hasSavedConnections()) {
+      if (!this._connectionStorage.hasSavedConnections()) {
         void vscode.commands.executeCommand(
           EXTENSION_COMMANDS.MDB_OPEN_OVERVIEW_PAGE
         );
@@ -696,5 +823,6 @@ export default class MDBExtensionController implements vscode.Disposable {
     this._playgroundController.deactivate();
     this._telemetryService.deactivate();
     this._editorsController.deactivate();
+    this._webviewController.deactivate();
   }
 }

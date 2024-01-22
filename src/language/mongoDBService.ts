@@ -21,6 +21,7 @@ import parseSchema from 'mongodb-schema';
 import path from 'path';
 import { signatures } from '@mongosh/shell-api';
 import translator from '@mongosh/i18n';
+import { isAtlasStream } from 'mongodb-build-info';
 import { Worker as WorkerThreads } from 'worker_threads';
 
 import { ExportToLanguageMode } from '../types/playgroundType';
@@ -35,10 +36,11 @@ import type {
 } from '../types/playgroundType';
 import type { ClearCompletionsCache } from '../types/completionsCache';
 import { Visitor } from './visitor';
-import type { CompletionState } from './visitor';
+import type { CompletionState, NamespaceState } from './visitor';
 import LINKS from '../utils/links';
 
 import DIAGNOSTIC_CODES from './diagnosticCodes';
+import { getDBFromConnectionString } from '../utils/connection-string-db';
 
 const PROJECT = '$project';
 
@@ -64,6 +66,7 @@ export default class MongoDBService {
   _currentConnectionOptions?: MongoClientOptions;
 
   _databaseCompletionItems: CompletionItem[] = [];
+  _streamProcessorCompletionItems: CompletionItem[] = [];
   _shellSymbolCompletionItems: { [symbol: string]: CompletionItem[] } = {};
   _globalSymbolCompletionItems: CompletionItem[] = [];
   _collections: { [database: string]: string[] } = {};
@@ -146,6 +149,7 @@ export default class MongoDBService {
         databases: true,
         collections: true,
         fields: true,
+        streamProcessors: true,
       });
       await this._closeCurrentConnection();
     }
@@ -173,6 +177,22 @@ export default class MongoDBService {
       );
     }
 
+    if (isAtlasStream(connectionString || '')) {
+      await this._getAndCacheStreamProcessors();
+    } else {
+      await this._getAndCacheDatabases();
+    }
+
+    this._connection.console.log(
+      `CliServiceProvider active connection has changed: { connectionId: ${connectionId} }`
+    );
+    return {
+      successfullyConnected: true,
+      connectionId,
+    };
+  }
+
+  async _getAndCacheDatabases() {
     try {
       // Get database names for the current connection.
       const databases = await this._getDatabases();
@@ -183,14 +203,17 @@ export default class MongoDBService {
         `LS get databases error: ${util.inspect(error)}`
       );
     }
+  }
 
-    this._connection.console.log(
-      `CliServiceProvider active connection has changed: { connectionId: ${connectionId} }`
-    );
-    return {
-      successfullyConnected: true,
-      connectionId,
-    };
+  async _getAndCacheStreamProcessors() {
+    try {
+      const processors = await this._getStreamProcessors();
+      this._cacheStreamProcessorCompletionItems(processors);
+    } catch (error) {
+      this._connection.console.error(
+        `LS get stream processors error: ${util.inspect(error)}`
+      );
+    }
   }
 
   /**
@@ -244,9 +267,16 @@ export default class MongoDBService {
           )
         );
 
-        worker?.on(
-          'message',
-          ({ error, data }: { data?: ShellEvaluateResult; error?: any }) => {
+        worker?.on('message', ({ name, payload }) => {
+          if (name === ServerCommands.SHOW_CONSOLE_OUTPUT) {
+            void this._connection.sendNotification(name, payload);
+          }
+
+          if (name === ServerCommands.CODE_EXECUTION_RESULT) {
+            const { error, data } = payload as {
+              data?: ShellEvaluateResult;
+              error?: any;
+            };
             if (error) {
               this._connection.console.error(
                 `WORKER error: ${util.inspect(error)}`
@@ -260,7 +290,7 @@ export default class MongoDBService {
               resolve(data);
             });
           }
-        );
+        });
 
         worker.postMessage({
           name: ServerCommands.EXECUTE_CODE_FROM_PLAYGROUND,
@@ -291,6 +321,24 @@ export default class MongoDBService {
         return resolve(undefined);
       }
     });
+  }
+
+  /**
+   * Get stream processors names for the current connection.
+   */
+  async _getStreamProcessors(): Promise<Document[]> {
+    if (this._serviceProvider) {
+      try {
+        const cmd = { listStreamProcessors: 1 };
+        const result = await this._serviceProvider.runCommand('admin', cmd);
+        return result.streamProcessors ?? [];
+      } catch (error) {
+        this._connection.console.error(
+          `LS get stream processors error: ${error}`
+        );
+      }
+    }
+    return [];
   }
 
   /**
@@ -376,12 +424,17 @@ export default class MongoDBService {
   }
 
   /**
-   * Return 'db' and 'use' completion items.
+   * Return 'db', 'sp' and 'use' completion items.
    */
   _cacheGlobalSymbolCompletionItems() {
     this._globalSymbolCompletionItems = [
       {
         label: 'db',
+        kind: CompletionItemKind.Method,
+        preselect: true,
+      },
+      {
+        label: 'sp',
         kind: CompletionItemKind.Method,
         preselect: true,
       },
@@ -446,6 +499,25 @@ export default class MongoDBService {
   }
 
   /**
+   * @param state The state returned from Visitor.
+   * @returns The state with the default connected database, if available, if
+   * and only if the state returned from visitor does not already mention a
+   * database
+   */
+  withDefaultDatabase<T extends NamespaceState | CompletionState>(state: T): T {
+    const defaultDB = this.connectionString
+      ? getDBFromConnectionString(this.connectionString)
+      : null;
+    if (state.databaseName === null && defaultDB !== null) {
+      return {
+        ...state,
+        databaseName: defaultDB,
+      };
+    }
+    return state;
+  }
+
+  /**
    * Parse code from a playground to identify
    * a context in which export to language action is being called.
    */
@@ -473,7 +545,9 @@ export default class MongoDBService {
     params: PlaygroundTextAndSelection
   ): ExportToLanguageNamespace {
     try {
-      const state = this._visitor.parseASTForNamespace(params);
+      const state = this.withDefaultDatabase(
+        this._visitor.parseASTForNamespace(params)
+      );
       return {
         databaseName: state.databaseName,
         collectionName: state.collectionName,
@@ -762,6 +836,18 @@ export default class MongoDBService {
   }
 
   /**
+   * If the current node is 'sp.processor.<trigger>' or 'sp["processor"].<trigger>'.
+   */
+  _provideStreamProcessorSymbolCompletionItems(state: CompletionState) {
+    if (state.isStreamProcessorSymbol) {
+      this._connection.console.log(
+        'VISITOR found stream processor symbol completions'
+      );
+      return this._shellSymbolCompletionItems.StreamProcessor;
+    }
+  }
+
+  /**
    * If the current node is 'db.collection.find().<trigger>'.
    */
   _provideFindCursorCompletionItems(state: CompletionState) {
@@ -874,6 +960,37 @@ export default class MongoDBService {
   }
 
   /**
+   * If the current node is 'sp.<trigger>'.
+   */
+  _provideSpSymbolCompletionItems(state: CompletionState) {
+    if (state.isSpSymbol) {
+      if (state.isStreamProcessorName) {
+        this._connection.console.log(
+          'VISITOR found sp symbol and stream processor name completions'
+        );
+        return this._shellSymbolCompletionItems.Streams.concat(
+          this._streamProcessorCompletionItems
+        );
+      }
+
+      this._connection.console.log('VISITOR found sp symbol completions');
+      return this._shellSymbolCompletionItems.Streams;
+    }
+  }
+
+  /**
+   * If the current node is 'sp.get(<trigger>)'.
+   */
+  _provideStreamProcessorNameCompletionItems(state: CompletionState) {
+    if (state.isStreamProcessorName) {
+      this._connection.console.log(
+        'VISITOR found stream processor name completions'
+      );
+      return this._streamProcessorCompletionItems;
+    }
+  }
+
+  /**
    * If the current node can be used as a collection name
    * e.g. 'db.<trigger>.find()' or 'let a = db.<trigger>'.
    */
@@ -917,9 +1034,8 @@ export default class MongoDBService {
       `Provide completion items for a position: ${util.inspect(position)}`
     );
 
-    const state = this._visitor.parseASTForCompletion(
-      document?.getText(),
-      position
+    const state = this.withDefaultDatabase(
+      this._visitor.parseASTForCompletion(document?.getText(), position)
     );
     this._connection.console.log(
       `VISITOR completion state: ${util.inspect(state)}`
@@ -944,6 +1060,7 @@ export default class MongoDBService {
       this._provideIdentifierObjectValueCompletionItems.bind(this, state),
       this._provideTextObjectValueCompletionItems.bind(this, state),
       this._provideCollectionSymbolCompletionItems.bind(this, state),
+      this._provideStreamProcessorSymbolCompletionItems.bind(this, state),
       this._provideFindCursorCompletionItems.bind(this, state),
       this._provideAggregationCursorCompletionItems.bind(this, state),
       this._provideGlobalSymbolCompletionItems.bind(this, state),
@@ -953,6 +1070,7 @@ export default class MongoDBService {
         currentLineText,
         position
       ),
+      this._provideSpSymbolCompletionItems.bind(this, state),
       this._provideCollectionNameCompletionItems.bind(
         this,
         state,
@@ -960,6 +1078,7 @@ export default class MongoDBService {
         position
       ),
       this._provideDbNameCompletionItems.bind(this, state),
+      this._provideStreamProcessorNameCompletionItems.bind(this, state),
     ];
 
     for (const func of completionOptions) {
@@ -1096,6 +1215,18 @@ export default class MongoDBService {
     this._collections[database] = collections.map((item) => item.name);
   }
 
+  _cacheStreamProcessorCompletionItems(processors: Document[]): void {
+    this._streamProcessorCompletionItems = processors.map(({ name }) => ({
+      kind: CompletionItemKind.Folder,
+      preselect: true,
+      label: name,
+    }));
+  }
+
+  clearCachedStreamProcessors(): void {
+    this._streamProcessorCompletionItems = [];
+  }
+
   clearCachedFields(): void {
     this._fields = {};
   }
@@ -1121,13 +1252,16 @@ export default class MongoDBService {
 
   clearCachedCompletions(clear: ClearCompletionsCache): void {
     if (clear.fields) {
-      this._fields = {};
+      this.clearCachedFields();
     }
     if (clear.databases) {
-      this._databaseCompletionItems = [];
+      this.clearCachedDatabases();
     }
     if (clear.collections) {
-      this._collections = {};
+      this.clearCachedCollections();
+    }
+    if (clear.streamProcessors) {
+      this.clearCachedStreamProcessors();
     }
   }
 }

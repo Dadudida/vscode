@@ -47,11 +47,10 @@
     "watch": "npm run compile && npm-run-all -p watch:*",
     "watch:extension": "npm run compile:extension -- -watch",
     "watch:extension-bundles": "webpack --mode development --watch",
-    "pretest": "npm run compile && mongodb-runner start --id=vscode -- --port 27018",
+    "pretest": "npm run compile",
     "test": "npm run test-webview && npm run test-extension",
     "test-extension": "cross-env NODE_OPTIONS=--no-force-async-hooks-checks xvfb-maybe node ./out/test/runTest.js",
     "test-webview": "jest",
-    "posttest": "mongodb-runner stop --id=vscode",
     "analyze-bundle": "webpack --mode production --analyze",
     "vscode:prepublish": "npm run clean && npm run compile:keyfile && npm run compile:resources && webpack --mode production",
     "check": "npm run lint && npm run depcheck",
@@ -67,8 +66,8 @@
   },
   "engines": {
     "vscode": "^1.79.1",
-    "node": "^16.16.0",
-    "npm": "^8.15.1"
+    "node": ">=16.16.0",
+    "npm": ">=8.19.4"
   },
   "activationEvents": [
     "onView:mongoDB",
@@ -276,6 +275,10 @@
         "title": "Remove Connection..."
       },
       {
+        "command": "mdb.editConnection",
+        "title": "Edit Connection..."
+      },
+      {
         "command": "mdb.addDatabase",
         "title": "Add Database...",
         "icon": {
@@ -398,6 +401,26 @@
       {
         "command": "mdb.deleteDocumentFromTreeView",
         "title": "Delete Document..."
+      },
+      {
+        "command": "mdb.addStreamProcessor",
+        "title": "Add StreamProcessor...",
+        "icon": {
+          "light": "images/light/plus-circle.svg",
+          "dark": "images/dark/plus-circle.svg"
+        }
+      },
+      {
+        "command": "mdb.startStreamProcessor",
+        "title": "Start Stream Processor"
+      },
+      {
+        "command": "mdb.stopStreamProcessor",
+        "title": "Stop Stream Processor"
+      },
+      {
+        "command": "mdb.dropStreamProcessor",
+        "title": "Drop Stream Processor..."
       }
     ],
     "menus": {
@@ -429,12 +452,22 @@
       "view/item/context": [
         {
           "command": "mdb.addDatabase",
-          "when": "view == mongoDBConnectionExplorer && viewItem == connectedConnectionTreeItem",
+          "when": "view == mongoDBConnectionExplorer && viewItem == connectedConnectionTreeItem && mdb.isAtlasStreams == false",
           "group": "inline"
         },
         {
           "command": "mdb.addDatabase",
-          "when": "view == mongoDBConnectionExplorer && viewItem == connectedConnectionTreeItem",
+          "when": "view == mongoDBConnectionExplorer && viewItem == connectedConnectionTreeItem && mdb.isAtlasStreams == false",
+          "group": "1@1"
+        },
+        {
+          "command": "mdb.addStreamProcessor",
+          "when": "view == mongoDBConnectionExplorer && viewItem == connectedConnectionTreeItem && mdb.isAtlasStreams == true",
+          "group": "inline"
+        },
+        {
+          "command": "mdb.addStreamProcessor",
+          "when": "view == mongoDBConnectionExplorer && viewItem == connectedConnectionTreeItem && mdb.isAtlasStreams == true",
           "group": "1@1"
         },
         {
@@ -451,6 +484,11 @@
           "command": "mdb.renameConnection",
           "when": "view == mongoDBConnectionExplorer && viewItem == connectedConnectionTreeItem",
           "group": "3@1"
+        },
+        {
+          "command": "mdb.editConnection",
+          "when": "view == mongoDBConnectionExplorer && viewItem == connectedConnectionTreeItem",
+          "group": "3@2"
         },
         {
           "command": "mdb.copyConnectionString",
@@ -481,6 +519,11 @@
           "command": "mdb.renameConnection",
           "when": "view == mongoDBConnectionExplorer && viewItem == disconnectedConnectionTreeItem",
           "group": "2@1"
+        },
+        {
+          "command": "mdb.editConnection",
+          "when": "view == mongoDBConnectionExplorer && viewItem == disconnectedConnectionTreeItem",
+          "group": "2@2"
         },
         {
           "command": "mdb.copyConnectionString",
@@ -612,6 +655,21 @@
           "command": "mdb.deleteDocumentFromTreeView",
           "when": "view == mongoDBConnectionExplorer && viewItem == documentTreeItem",
           "group": "3@1"
+        },
+        {
+          "command": "mdb.startStreamProcessor",
+          "when": "view == mongoDBConnectionExplorer && viewItem == streamProcessorTreeItem",
+          "group": "6@1"
+        },
+        {
+          "command": "mdb.stopStreamProcessor",
+          "when": "view == mongoDBConnectionExplorer && viewItem == streamProcessorTreeItem",
+          "group": "6@2"
+        },
+        {
+          "command": "mdb.dropStreamProcessor",
+          "when": "view == mongoDBConnectionExplorer && viewItem == streamProcessorTreeItem",
+          "group": "6@3"
         }
       ],
       "editor/title": [
@@ -640,27 +698,27 @@
         },
         {
           "command": "mdb.exportToRuby",
-          "when": "mdb.isPlayground == true && mdb.connectedToMongoDB == true"
+          "when": "mdb.isPlayground == true && mdb.connectedToMongoDB == true && mdb.isAtlasStreams == false"
         },
         {
           "command": "mdb.exportToPython",
-          "when": "mdb.isPlayground == true && mdb.connectedToMongoDB == true"
+          "when": "mdb.isPlayground == true && mdb.connectedToMongoDB == true && mdb.isAtlasStreams == false"
         },
         {
           "command": "mdb.exportToJava",
-          "when": "mdb.isPlayground == true && mdb.connectedToMongoDB == true"
+          "when": "mdb.isPlayground == true && mdb.connectedToMongoDB == true && mdb.isAtlasStreams == false"
         },
         {
           "command": "mdb.exportToCsharp",
-          "when": "mdb.isPlayground == true && mdb.connectedToMongoDB == true"
+          "when": "mdb.isPlayground == true && mdb.connectedToMongoDB == true && mdb.isAtlasStreams == false"
         },
         {
           "command": "mdb.exportToNode",
-          "when": "mdb.isPlayground == true && mdb.connectedToMongoDB == true"
+          "when": "mdb.isPlayground == true && mdb.connectedToMongoDB == true && mdb.isAtlasStreams == false"
         },
         {
           "command": "mdb.exportToGo",
-          "when": "mdb.isPlayground == true && mdb.connectedToMongoDB == true"
+          "when": "mdb.isPlayground == true && mdb.connectedToMongoDB == true && mdb.isAtlasStreams == false"
         },
         {
           "command": "mdb.refreshPlaygroundsFromTreeView",
@@ -700,6 +758,10 @@
         },
         {
           "command": "mdb.renameConnection",
+          "when": "false"
+        },
+        {
+          "command": "mdb.editConnection",
           "when": "false"
         },
         {
@@ -804,6 +866,22 @@
         },
         {
           "command": "mdb.deleteDocumentFromTreeView",
+          "when": "false"
+        },
+        {
+          "command": "mdb.addStreamProcessor",
+          "when": "false"
+        },
+        {
+          "command": "mdb.startStreamProcessor",
+          "when": "false"
+        },
+        {
+          "command": "mdb.stopStreamProcessor",
+          "when": "false"
+        },
+        {
+          "command": "mdb.dropStreamProcessor",
           "when": "false"
         }
       ]
@@ -933,15 +1011,20 @@
           "default": true,
           "description": "Show a confirmation message before deleting a document from the tree view."
         },
+        "mdb.persistOIDCTokens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Remain logged in when using the MONGODB-OIDC authentication mechanism for MongoDB server connection. Access tokens are encrypted using the system keychain before being stored."
+        },
+        "mdb.showOIDCDeviceAuthFlow": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show a checkbox on the connection form to enable device auth flow authentication for MongoDB server OIDC Authentication. This enables a less secure authentication flow that can be used as a fallback when browser-based authentication is unavailable."
+        },
         "mdb.sendTelemetry": {
           "type": "boolean",
           "default": true,
-          "description": "Allow the collection of anonynous diagnostic and usage telemetry data to help improve the product."
-        },
-        "mdb.connectionSaving.hideOptionToChooseWhereToSaveNewConnections": {
-          "type": "boolean",
-          "default": true,
-          "description": "When a connection is added, a prompt is shown that let's the user decide where the new connection should be saved. When this setting is checked, the prompt is not shown and the default connection saving location setting is used."
+          "description": "Allow the collection of anonymous diagnostic and usage telemetry data to help improve the product."
         },
         "mdb.connectionSaving.defaultConnectionSavingLocation": {
           "type": "string",
@@ -967,6 +1050,11 @@
           "type": "boolean",
           "default": false,
           "description": "The default behavior is to generate a single ObjectId and insert it on all cursors. Set to true to generate a unique ObjectId per cursor instead."
+        },
+        "mdb.browserCommandForOIDCAuth": {
+          "type": "string",
+          "default": "",
+          "description": "Specify a shell command that is run to start the browser for authenticating with the OIDC identity provider for the server connection. Leave this empty for default browser."
         }
       }
     }
@@ -974,38 +1062,33 @@
   "dependencies": {
     "@babel/parser": "^7.22.6",
     "@babel/traverse": "^7.23.2",
-    "@fortawesome/fontawesome-svg-core": "^6.4.0",
-    "@fortawesome/free-solid-svg-icons": "^6.4.0",
-    "@fortawesome/react-fontawesome": "^0.2.0",
-    "@iconify-icons/codicon": "^1.2.25",
-    "@iconify/react": "^1.1.4",
-    "@leafygreen-ui/logo": "^8.0.4",
-    "@mongodb-js/mongodb-constants": "^0.7.1",
-    "@mongosh/browser-runtime-electron": "^2.0.2",
-    "@mongosh/i18n": "^2.0.2",
-    "@mongosh/service-provider-server": "^2.0.2",
-    "@mongosh/shell-api": "^2.0.2",
-    "analytics-node": "^6.2.0",
-    "bson": "^6.1.0",
-    "bson-transpilers": "^2.0.4",
-    "classnames": "^2.3.2",
+    "@mongodb-js/compass-components": "^1.21.2",
+    "@mongodb-js/connection-form": "^1.22.2",
+    "@mongodb-js/connection-info": "^0.1.2",
+    "@mongodb-js/mongodb-constants": "^0.8.9",
+    "@mongosh/browser-runtime-electron": "^2.1.1",
+    "@mongosh/i18n": "^2.1.1",
+    "@mongosh/service-provider-server": "^2.1.1",
+    "@mongosh/shell-api": "^2.1.1",
+    "@segment/analytics-node": "^1.1.4",
+    "bson": "^6.2.0",
+    "bson-transpilers": "^2.2.0",
     "debug": "^4.3.4",
     "dotenv": "^16.3.1",
+    "lodash": "^4.17.21",
     "micromatch": "^4.0.5",
-    "mongodb": "^6.0.0",
-    "mongodb-build-info": "^1.6.2",
+    "mongodb": "^6.3.0",
+    "mongodb-build-info": "^1.7.1",
     "mongodb-cloud-info": "^2.1.0",
-    "mongodb-connection-string-url": "^2.6.0",
-    "mongodb-data-service": "^22.10.0",
-    "mongodb-data-service-legacy": "npm:mongodb-data-service@22.8.0",
-    "mongodb-query-parser": "^3.1.3",
-    "mongodb-schema": "^11.2.2",
+    "mongodb-connection-string-url": "^3.0.0",
+    "mongodb-data-service": "^22.17.3",
+    "mongodb-log-writer": "^1.4.0",
+    "mongodb-query-parser": "^4.0.2",
+    "mongodb-schema": "^12.1.1",
     "numeral": "^2.0.6",
     "react": "^17.0.2",
     "react-dom": "^17.0.2",
-    "react-redux": "^8.1.1",
-    "redux": "^4.2.1",
-    "resolve-mongodb-srv": "^1.1.2",
+    "resolve-mongodb-srv": "^1.1.3",
     "ts-log": "^2.2.5",
     "uuid": "^8.3.2",
     "vscode-languageclient": "^8.1.0",
@@ -1014,16 +1097,16 @@
   },
   "devDependencies": {
     "@babel/preset-typescript": "^7.22.5",
+    "@mongodb-js/oidc-mock-provider": "^0.6.9",
     "@mongodb-js/oidc-plugin": "^0.3.0",
-    "@mongodb-js/prettier-config-compass": "^1.0.0",
+    "@mongodb-js/prettier-config-devtools": "^1.0.1",
     "@mongodb-js/sbom-tools": "^0.5.4",
     "@mongosh/service-provider-core": "^2.0.2",
-    "@types/analytics-node": "^3.1.11",
+    "@testing-library/react": "^12.1.5",
     "@types/babel__core": "^7.20.1",
     "@types/babel__traverse": "^7.20.1",
     "@types/chai": "^4.3.5",
     "@types/debug": "^4.1.8",
-    "@types/enzyme": "^3.10.13",
     "@types/glob": "^7.2.0",
     "@types/jest": "^26.0.24",
     "@types/micromatch": "^4.0.2",
@@ -1037,25 +1120,23 @@
     "@types/vscode": "^1.79.1",
     "@typescript-eslint/eslint-plugin": "^5.61.0",
     "@typescript-eslint/parser": "^5.61.0",
-    "@vscode/test-electron": "^2.3.3",
+    "@vscode/test-electron": "^2.3.8",
     "@vscode/vsce": "^2.19.0",
     "@wojtekmaj/enzyme-adapter-react-17": "^0.8.0",
-    "autoprefixer": "^9.8.8",
+    "autoprefixer": "^10.4.16",
     "buffer": "^6.0.3",
     "chai": "^4.3.7",
     "chai-as-promised": "^7.1.1",
-    "chalk": "^4.1.2",
-    "cli-ux": "^5.6.7",
     "cross-env": "^7.0.3",
-    "css-loader": "^3.6.0",
+    "crypto-browserify": "^3.12.0",
+    "css-loader": "^6.8.1",
     "depcheck": "^1.4.3",
-    "download": "^8.0.0",
-    "electron": "^23.3.9",
+    "duplicate-package-checker-webpack-plugin": "^3.0.0",
     "enzyme": "^3.11.0",
     "eslint": "^8.44.0",
     "eslint-config-mongodb-js": "^5.0.3",
     "eslint-plugin-mocha": "^10.1.0",
-    "execa": "^1.0.0",
+    "fork-ts-checker-webpack-plugin": "^9.0.2",
     "glob": "^7.2.3",
     "jest": "^26.6.3",
     "jest-junit": "^12.3.0",
@@ -1063,19 +1144,20 @@
     "less": "^3.13.1",
     "less-loader": "^5.0.0",
     "mkdirp": "^1.0.4",
-    "mocha": "^8.4.0",
+    "mocha": "^10.2.0",
     "mocha-junit-reporter": "^2.2.0",
     "mocha-multi": "^1.1.7",
     "mongodb-client-encryption": "^6.0.0",
-    "mongodb-runner": "^5.4.4",
+    "mongodb-runner": "^5.4.5",
+    "node-fetch": "^2.7.0",
     "node-loader": "^0.6.0",
     "npm-run-all": "^4.1.5",
     "ora": "^5.4.1",
-    "postcss-loader": "^3.0.0",
+    "path-browserify": "^1.0.1",
+    "postcss-loader": "^7.3.3",
     "pre-commit": "^1.2.2",
     "prettier": "^2.8.8",
     "process": "^0.11.10",
-    "semver": "^7.5.3",
     "sinon": "^9.2.4",
     "sinon-chai": "^3.7.0",
     "stream-browserify": "^3.0.0",
@@ -1088,13 +1170,7 @@
     "webpack-bundle-analyzer": "^4.9.0",
     "webpack-cli": "^5.1.4",
     "webpack-merge": "^5.9.0",
-    "xvfb-maybe": "^0.2.1",
-    "yargs-parser": "^20.2.9"
-  },
-  "overrides": {
-    "mongodb-connection-model": {
-      "@mongodb-js/compass-utils": "0.3.4"
-    }
+    "xvfb-maybe": "^0.2.1"
   },
   "precommit": [
     "check"

@@ -157,7 +157,22 @@ for (let i = 0; i < numberOfDocumentsToMock; i++) {
   });
 }
 
+const mockStreamProcessors = [
+  {
+    name: 'mockStreamProcessor1',
+    state: 'STARTED',
+  },
+  {
+    name: 'mockStreamProcessor2',
+    state: 'STOPPPED',
+  },
+];
+
 class DataServiceStub {
+  listStreamProcessors(): Promise<any> {
+    return Promise.resolve(mockStreamProcessors);
+  }
+
   listDatabases(): Promise<any> {
     return Promise.resolve(
       mockDatabaseNames.map((dbName) => ({ name: dbName }))
@@ -248,6 +263,8 @@ class LanguageServerControllerStub {
   _isExecutingInProgress: boolean;
   _client: LanguageClient;
   _currentConnectionId: string | null = null;
+  _consoleOutputChannel =
+    vscode.window.createOutputChannel('Playground output');
 
   constructor(
     context: ExtensionContextStub,
@@ -322,7 +339,6 @@ class LanguageServerControllerStub {
 
   evaluate(/* codeToEvaluate: string */): Promise<ShellEvaluateResult> {
     return Promise.resolve({
-      outputLines: [],
       result: {
         namespace: null,
         type: null,
@@ -376,6 +392,7 @@ export {
   mockTextEditor,
   mockDatabaseNames,
   mockDatabases,
+  mockStreamProcessors,
   mockVSCodeTextDocument,
   DataServiceStub,
   ExtensionContextStub,

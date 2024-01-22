@@ -4,7 +4,9 @@ const webpack = require('webpack');
 
 const autoprefixer = require('autoprefixer');
 const { BundleAnalyzerPlugin } = require('webpack-bundle-analyzer');
+const DuplicatePackageCheckerPlugin = require('duplicate-package-checker-webpack-plugin');
 const { merge } = require('webpack-merge');
+const ForkTsCheckerWebpackPlugin = require('fork-ts-checker-webpack-plugin');
 
 const { WebpackDependenciesPlugin } = require('@mongodb-js/sbom-tools');
 
@@ -38,6 +40,9 @@ module.exports = (env, argv) => {
         // Removes `electron`: is an optional dependency of `oidc-plugin`, but also installed as dev-dep,
         // webpack would bring it inside the bundle otherwise.
         electron: false,
+
+        // We don't currently support kerberos in our extension.
+        kerberos: false,
       },
     },
 
@@ -50,7 +55,9 @@ module.exports = (env, argv) => {
       keytar: 'keytar',
 
       // Electron:
+      electron: 'electron',
       '@electron/remote': '@electron/remote',
+      'hadron-ipc': 'hadron-ipc',
 
       // MongoDB node driver externals:
       snappy: 'snappy',
@@ -65,6 +72,7 @@ module.exports = (env, argv) => {
       webpackDependenciesPlugin,
       ...(argv.analyze
         ? [
+            new DuplicatePackageCheckerPlugin(),
             new BundleAnalyzerPlugin({
               analyzerPort: 'auto',
             }),
@@ -154,6 +162,9 @@ module.exports = (env, argv) => {
       fallback: {
         stream: require.resolve('stream-browserify'),
         buffer: require.resolve('buffer'),
+        crypto: require.resolve('crypto-browserify'),
+        path: require.resolve('path-browserify'),
+        mongodb: false,
       },
     },
     module: {
@@ -179,8 +190,8 @@ module.exports = (env, argv) => {
             {
               loader: 'postcss-loader',
               options: {
-                plugins: function () {
-                  return [autoprefixer()];
+                postcssOptions: {
+                  plugins: [autoprefixer()],
                 },
               },
             },
@@ -195,6 +206,10 @@ module.exports = (env, argv) => {
       ],
     },
     plugins: [
+      // This plugin has been added to avoid Out of memory crashes of webpack on
+      // our Github runners. It does so by moving the type checking to a
+      // separate process.
+      new ForkTsCheckerWebpackPlugin(),
       // This is here to deal with some node.js code brought in
       // by @leafygreen/logo via @emotion/server:
       new webpack.ProvidePlugin({

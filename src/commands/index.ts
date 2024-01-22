@@ -41,6 +41,7 @@ enum EXTENSION_COMMANDS {
   MDB_CONNECT_TO_CONNECTION_TREE_VIEW = 'mdb.connectToConnectionTreeItem',
   MDB_CREATE_PLAYGROUND_FROM_TREE_VIEW = 'mdb.createNewPlaygroundFromTreeView',
   MDB_DISCONNECT_FROM_CONNECTION_TREE_VIEW = 'mdb.disconnectFromConnectionTreeItem',
+  MDB_EDIT_CONNECTION = 'mdb.editConnection',
   MDB_REFRESH_CONNECTION = 'mdb.refreshConnection',
   MDB_COPY_CONNECTION_STRING = 'mdb.copyConnectionString',
   MDB_REMOVE_CONNECTION_TREE_VIEW = 'mdb.treeItemRemoveConnection',
@@ -66,6 +67,10 @@ enum EXTENSION_COMMANDS {
   MDB_COPY_DOCUMENT_CONTENTS_FROM_TREE_VIEW = 'mdb.copyDocumentContentsFromTreeView',
   MDB_CLONE_DOCUMENT_FROM_TREE_VIEW = 'mdb.cloneDocumentFromTreeView',
   MDB_DELETE_DOCUMENT_FROM_TREE_VIEW = 'mdb.deleteDocumentFromTreeView',
+  MDB_ADD_STREAM_PROCESSOR = 'mdb.addStreamProcessor',
+  MDB_START_STREAM_PROCESSOR = 'mdb.startStreamProcessor',
+  MDB_STOP_STREAM_PROCESSOR = 'mdb.stopStreamProcessor',
+  MDB_DROP_STREAM_PROCESSOR = 'mdb.dropStreamProcessor',
 }
 
 export default EXTENSION_COMMANDS;

@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import assert from 'assert';
 import { beforeEach, afterEach } from 'mocha';
 import sinon from 'sinon';
+import { connect, createConnectionAttempt } from 'mongodb-data-service';
+import { mongoLogId } from 'mongodb-log-writer';
 
 import {
   DefaultSavingLocations,
@@ -10,6 +12,9 @@ import {
 } from '../../../storage/storageController';
 import { mdbTestExtension } from '../stubbableMdbExtension';
 import { TEST_DATABASE_URI } from '../dbTestHelper';
+import { createLogger } from '../../../logging';
+
+const log = createLogger('test explorer controller');
 
 const testDatabaseURI2WithTimeout =
   'mongodb://shouldfail?connectTimeoutMS=500&serverSelectionTimeoutMS=500';
@@ -67,7 +72,10 @@ suite('Explorer Controller Test Suite', function () {
         secretStorageLocation: SecretStorageLocation.SecretStorage,
       },
     };
-    testConnectionController.setConnnecting(true);
+    testConnectionController._connectionAttempt = createConnectionAttempt({
+      connectFn: connect,
+      logger: Object.assign(log, { mongoLogId }),
+    });
 
     const connectionsItems = await treeController.getChildren();
 
@@ -118,8 +126,8 @@ suite('Explorer Controller Test Suite', function () {
       `Expected there be 1 connection tree item, found ${connectionsItems.length}`
     );
     assert(
-      connectionsItems[0].label === 'localhost:27018',
-      'There should be a connection tree item with the label "localhost:27018"'
+      connectionsItems[0].label === 'localhost:27088',
+      'There should be a connection tree item with the label "localhost:27088"'
     );
     assert(
       connectionsItems[0].description === 'connected',
@@ -152,10 +160,11 @@ suite('Explorer Controller Test Suite', function () {
     const connectionName =
       testConnectionController._connections[connectionId].name;
 
-    assert(
-      connectionName === 'localhost:27018',
-      `Expected active connection name to be 'localhost:27018' found ${connectionName}`
-    );
+    const connectionsItemsFirstConnect = await treeController.getChildren();
+
+    assert.strictEqual(connectionName, 'localhost:27088');
+    // Ensure we auto expand when it's successfully connected to.
+    assert(connectionsItemsFirstConnect[0].isExpanded);
 
     try {
       await testConnectionController.addNewConnectionStringAndConnect(
@@ -172,8 +181,8 @@ suite('Explorer Controller Test Suite', function () {
       `Expected there be 2 connection tree item, found ${connectionsItems.length}`
     );
     assert(
-      connectionsItems[0].label === 'localhost:27018',
-      `First connection tree item should have label "localhost:27018" found ${connectionsItems[0].label}`
+      connectionsItems[0].label === 'localhost:27088',
+      `First connection tree item should have label "localhost:27088" found ${connectionsItems[0].label}`
     );
     assert(
       connectionsItems[0].isExpanded === false,

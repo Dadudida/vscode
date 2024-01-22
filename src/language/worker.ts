@@ -6,10 +6,10 @@ import { ServerCommands } from './serverCommands';
 
 import type {
   ShellEvaluateResult,
-  PlaygroundDebug,
   WorkerEvaluate,
   MongoClientOptions,
 } from '../types/playgroundType';
+import util from 'util';
 
 interface EvaluationResult {
   printable: any;
@@ -52,19 +52,18 @@ const execute = async (
   try {
     // Create a new instance of the runtime for each playground evaluation.
     const runtime = new ElectronRuntime(serviceProvider);
-    const outputLines: PlaygroundDebug = [];
 
     // Collect console.log() output.
     runtime.setEvaluationListener({
       onPrint(values: EvaluationResult[]) {
-        for (const { type, printable } of values) {
-          outputLines.push({
-            type,
-            content: printable,
-            namespace: null,
-            language: null,
-          });
-        }
+        parentPort?.postMessage({
+          name: ServerCommands.SHOW_CONSOLE_OUTPUT,
+          payload: values.map((v) => {
+            return typeof v.printable === 'string'
+              ? v.printable
+              : util.inspect(v.printable);
+          }),
+        });
       },
     });
 
@@ -83,7 +82,7 @@ const execute = async (
       language: getLanguage({ type, printable }),
     };
 
-    return { data: { outputLines, result } };
+    return { data: { result } };
   } catch (error) {
     return { error };
   } finally {
@@ -93,13 +92,14 @@ const execute = async (
 
 const handleMessageFromParentPort = async ({ name, data }): Promise<void> => {
   if (name === ServerCommands.EXECUTE_CODE_FROM_PLAYGROUND) {
-    parentPort?.postMessage(
-      await execute(
+    parentPort?.postMessage({
+      name: ServerCommands.CODE_EXECUTION_RESULT,
+      payload: await execute(
         data.codeToEvaluate,
         data.connectionString,
         data.connectionOptions
-      )
-    );
+      ),
+    });
   }
 };
 

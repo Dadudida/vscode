@@ -1,46 +1,30 @@
 import * as vscode from 'vscode';
-import { connect } from 'mongodb-data-service';
+import { connect, createConnectionAttempt } from 'mongodb-data-service';
 import type {
   DataService,
-  ConnectionOptions as ConnectionOptionsFromCurrentDS,
+  ConnectionAttempt,
+  ConnectionOptions,
 } from 'mongodb-data-service';
 import ConnectionString from 'mongodb-connection-string-url';
 import { EventEmitter } from 'events';
 import type { MongoClientOptions } from 'mongodb';
 import { v4 as uuidv4 } from 'uuid';
-import { createKeytar } from './utils/keytar';
+import { cloneDeep, merge } from 'lodash';
+import { mongoLogId } from 'mongodb-log-writer';
+import { extractSecrets } from '@mongodb-js/connection-info';
+import { adjustConnectionOptionsBeforeConnect } from '@mongodb-js/connection-form';
+
 import { CONNECTION_STATUS } from './views/webview-app/extension-app-message-constants';
 import { createLogger } from './logging';
-import { ext } from './extensionConstants';
 import formatError from './utils/formatError';
-import type LegacyConnectionModel from './views/webview-app/connection-model/legacy-connection-model';
-import type { SecretStorageLocationType } from './storage/storageController';
-import {
-  StorageLocation,
-  SecretStorageLocation,
-} from './storage/storageController';
 import type { StorageController } from './storage';
-import { StorageVariables } from './storage';
 import type { StatusView } from './views';
 import type TelemetryService from './telemetry/telemetryService';
+import { openLink } from './utils/linkHelper';
+import type { LoadedConnection } from './storage/connectionStorage';
+import { ConnectionStorage } from './storage/connectionStorage';
 import LINKS from './utils/links';
-import type {
-  ConnectionInfo as ConnectionInfoFromLegacyDS,
-  ConnectionOptions as ConnectionOptionsFromLegacyDS,
-} from 'mongodb-data-service-legacy';
-import {
-  getConnectionTitle,
-  extractSecrets,
-  mergeSecrets,
-  convertConnectionModelToInfo,
-} from 'mongodb-data-service-legacy';
-
-export function launderConnectionOptionTypeFromLegacyToCurrent(
-  opts: ConnectionOptionsFromLegacyDS
-): ConnectionOptionsFromCurrentDS {
-  // Ensure that, at most, the types for OIDC mismatch here.
-  return opts as Omit<typeof opts, 'oidc'>;
-}
+import { isAtlasStream } from 'mongodb-build-info';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const packageJSON = require('../package.json');
@@ -60,15 +44,6 @@ export enum ConnectionTypes {
   CONNECTION_ID = 'CONNECTION_ID',
 }
 
-export interface StoreConnectionInfo {
-  id: string; // Connection model id or a new uuid.
-  name: string; // Possibly user given name, not unique.
-  storageLocation: StorageLocation;
-  secretStorageLocation?: SecretStorageLocationType;
-  connectionOptions?: ConnectionOptionsFromLegacyDS;
-  connectionModel?: LegacyConnectionModel;
-}
-
 export enum NewConnectionType {
   NEW_CONNECTION = 'NEW_CONNECTION',
   SAVED_CONNECTION = 'SAVED_CONNECTION',
@@ -84,56 +59,79 @@ interface ConnectionQuickPicks {
   data: { type: NewConnectionType; connectionId?: string };
 }
 
-type StoreConnectionInfoWithConnectionModel = StoreConnectionInfo &
-  Required<Pick<StoreConnectionInfo, 'connectionModel'>>;
-
-type StoreConnectionInfoWithConnectionOptions = StoreConnectionInfo &
-  Required<Pick<StoreConnectionInfo, 'connectionOptions'>>;
-
-type StoreConnectionInfoWithSecretStorageLocation = StoreConnectionInfo &
-  Required<Pick<StoreConnectionInfo, 'secretStorageLocation'>>;
-
-type MigratedStoreConnectionInfoWithConnectionOptions =
-  StoreConnectionInfoWithConnectionOptions &
-    StoreConnectionInfoWithSecretStorageLocation;
-
-type FailedMigrationConnectionDescriptor = {
-  connectionId: string;
-  connectionName: string;
+type RecursivePartial<T> = {
+  [P in keyof T]?: T[P] extends (infer U)[]
+    ? RecursivePartial<U>[]
+    : T[P] extends object | undefined
+    ? RecursivePartial<T[P]>
+    : T[P];
 };
 
-export const keytarMigrationFailedMessage = (failedConnections: number) => {
-  // Writing the message this way to keep it readable.
-  return [
-    `Unable to migrate ${failedConnections} of your cluster connections from the deprecated Keytar to the VS Code SecretStorage.`,
-    'Keytar is officially archived and not being maintained.',
-    'In an effort to promote good security practices by not depending on an archived piece of software, VS Code removes Keytar shim in favour of built-in storage utility for secrets.',
-    'Please review your connections and delete or recreate those with missing secrets.',
-    'You can still access your secrets via OS keychain.',
-  ].join(' ');
-};
+function isOIDCAuth(connectionString: string): boolean {
+  const authMechanismString = (
+    new ConnectionString(connectionString).searchParams.get('authMechanism') ||
+    ''
+  ).toUpperCase();
+
+  return authMechanismString === 'MONGODB-OIDC';
+}
+
+// Exported for testing.
+export function getNotifyDeviceFlowForConnectionAttempt(
+  connectionOptions: ConnectionOptions
+) {
+  const isOIDCConnectionAttempt = isOIDCAuth(
+    connectionOptions.connectionString
+  );
+  let notifyDeviceFlow:
+    | ((deviceFlowInformation: {
+        verificationUrl: string;
+        userCode: string;
+      }) => void)
+    | undefined;
+
+  if (isOIDCConnectionAttempt) {
+    notifyDeviceFlow = ({
+      verificationUrl,
+      userCode,
+    }: {
+      verificationUrl: string;
+      userCode: string;
+    }) => {
+      void vscode.window.showInformationMessage(
+        `Visit the following URL to complete authentication: ${verificationUrl}  Enter the following code on that page: ${userCode}`
+      );
+    };
+  }
+
+  return notifyDeviceFlow;
+}
 
 export default class ConnectionController {
   // This is a map of connection ids to their configurations.
   // These connections can be saved on the session (runtime),
   // on the workspace, or globally in vscode.
   _connections: {
-    [connectionId: string]: MigratedStoreConnectionInfoWithConnectionOptions;
+    [connectionId: string]: LoadedConnection;
   } = Object.create(null);
+  // Additional connection information that is merged with the connections
+  // when connecting. This is useful for instances like OIDC sessions where we
+  // have a setting on the system for storing credentials.
+  // When the setting is on this `connectionMergeInfos` would have the session
+  // credential information and merge it before connecting.
+  connectionMergeInfos: Record<string, RecursivePartial<LoadedConnection>> =
+    Object.create(null);
+
   _activeDataService: DataService | null = null;
-  _storageController: StorageController;
+  _connectionStorage: ConnectionStorage;
   _telemetryService: TelemetryService;
 
   private readonly _serviceName = 'mdb.vscode.savedConnections';
   private _currentConnectionId: null | string = null;
 
-  // When we are connecting to a server we save a connection version to
-  // the request. That way if a new connection attempt is made while
-  // the connection is being established, we know we can ignore the
-  // request when it is completed so we don't have two live connections at once.
-  private _connectingVersion: null | string = null;
-
-  private _connecting = false;
+  _connectionAttempt: null | ConnectionAttempt = null;
+  _connectionStringInputCancellationToken: null | vscode.CancellationTokenSource =
+    null;
   private _connectingConnectionId: null | string = null;
   private _disconnecting = false;
 
@@ -152,85 +150,19 @@ export default class ConnectionController {
     telemetryService: TelemetryService;
   }) {
     this._statusView = statusView;
-    this._storageController = storageController;
     this._telemetryService = telemetryService;
+    this._connectionStorage = new ConnectionStorage({
+      storageController,
+    });
   }
 
   async loadSavedConnections(): Promise<void> {
-    const globalAndWorkspaceConnections = Object.entries({
-      ...this._storageController.get(
-        StorageVariables.GLOBAL_SAVED_CONNECTIONS,
-        StorageLocation.GLOBAL
-      ),
-      ...this._storageController.get(
-        StorageVariables.WORKSPACE_SAVED_CONNECTIONS,
-        StorageLocation.WORKSPACE
-      ),
-    });
+    const loadedConnections = await this._connectionStorage.loadConnections();
 
-    // A list of connection ids that we could not migrate in previous load of
-    // connections because of Keytar not being available.
-    const connectionIdsThatDidNotMigrateEarlier =
-      globalAndWorkspaceConnections.reduce<string[]>(
-        (ids, [connectionId, connectionInfo]) => {
-          if (
-            connectionInfo.secretStorageLocation ===
-            SecretStorageLocation.KeytarSecondAttempt
-          ) {
-            return [...ids, connectionId];
-          }
-          return ids;
-        },
-        []
-      );
-
-    const hasConnectionsThatDidNotMigrateEarlier =
-      !!globalAndWorkspaceConnections.some(
-        ([, connectionInfo]) =>
-          !connectionInfo.secretStorageLocation ||
-          connectionInfo.secretStorageLocation === 'vscode.Keytar'
-      );
-
-    if (hasConnectionsThatDidNotMigrateEarlier) {
-      try {
-        ext.keytarModule =
-          ext.keytarModule === undefined ? createKeytar() : ext.keytarModule;
-      } catch (err) {
-        // Couldn't load keytar, proceed without storing & loading connections.
-      }
+    for (const connection of loadedConnections) {
+      this._connections[connection.id] = connection;
     }
 
-    // A list of connection descriptors that we could not migration in the
-    // current load of connections because of Keytar not being available.
-    const connectionsThatDidNotMigrate = (
-      await Promise.all(
-        globalAndWorkspaceConnections.map<
-          Promise<FailedMigrationConnectionDescriptor | undefined>
-        >(async ([connectionId, connectionInfo]) => {
-          const connectionInfoWithSecrets =
-            await this._getConnectionInfoWithSecrets(connectionInfo);
-          if (!connectionInfoWithSecrets) {
-            return;
-          }
-
-          this._connections[connectionId] = connectionInfoWithSecrets;
-          const connectionSecretsInKeytar =
-            connectionInfoWithSecrets.secretStorageLocation ===
-            SecretStorageLocation.KeytarSecondAttempt;
-          if (
-            connectionSecretsInKeytar &&
-            !connectionIdsThatDidNotMigrateEarlier.includes(connectionId)
-          ) {
-            return {
-              connectionId,
-              connectionName: connectionInfo.name,
-            };
-          }
-        })
-      )
-    ).filter((conn): conn is FailedMigrationConnectionDescriptor => !!conn);
-
-    const loadedConnections = Object.values(this._connections);
     if (loadedConnections.length) {
       this.eventEmitter.emit(DataServiceEventTypes.CONNECTIONS_DID_CHANGE);
     }
@@ -240,11 +172,6 @@ export default class ConnectionController {
     /* this._telemetryService.trackSavedConnectionsLoaded({
       saved_connections: globalAndWorkspaceConnections.length,
       loaded_connections: loadedConnections.length,
-      connections_with_secrets_in_keytar: loadedConnections.filter(
-        (connection) =>
-          connection.secretStorageLocation === SecretStorageLocation.Keytar ||
-          connection.secretStorageLocation ===
-            SecretStorageLocation.KeytarSecondAttempt
       ).length,
       connections_with_secrets_in_secret_storage: loadedConnections.filter(
         (connection) =>
@@ -252,142 +179,6 @@ export default class ConnectionController {
           SecretStorageLocation.SecretStorage
       ).length,
     }); */
-
-    if (connectionsThatDidNotMigrate.length) {
-      log.error(
-        `Could not migrate secrets for ${connectionsThatDidNotMigrate.length} connections`,
-        connectionsThatDidNotMigrate
-      );
-      this._telemetryService.trackKeytarSecretsMigrationFailed({
-        saved_connections: globalAndWorkspaceConnections.length,
-        loaded_connections: loadedConnections.length,
-        connections_with_failed_keytar_migration:
-          connectionsThatDidNotMigrate.length,
-      });
-      void vscode.window.showInformationMessage(
-        keytarMigrationFailedMessage(connectionsThatDidNotMigrate.length)
-      );
-    }
-  }
-
-  async _getConnectionInfoWithSecrets(
-    connectionInfo: StoreConnectionInfo
-  ): Promise<MigratedStoreConnectionInfoWithConnectionOptions | undefined> {
-    try {
-      if (connectionInfo.connectionModel) {
-        return await this._migrateConnectionWithConnectionModel(
-          connectionInfo as StoreConnectionInfoWithConnectionModel
-        );
-      }
-
-      if (
-        !connectionInfo.secretStorageLocation ||
-        connectionInfo.secretStorageLocation === 'vscode.Keytar'
-      ) {
-        return await this._migrateConnectionWithKeytarSecrets(
-          connectionInfo as StoreConnectionInfoWithConnectionOptions
-        );
-      }
-
-      // We tried migrating this connection earlier but failed because Keytar was not
-      // available. So we return simply the connection without secrets.
-      if (
-        connectionInfo.secretStorageLocation ===
-        SecretStorageLocation.KeytarSecondAttempt
-      ) {
-        return connectionInfo as MigratedStoreConnectionInfoWithConnectionOptions;
-      }
-
-      const unparsedSecrets =
-        (await this._storageController.getSecret(connectionInfo.id)) ?? '';
-
-      return this._mergedConnectionInfoWithSecrets(
-        connectionInfo as MigratedStoreConnectionInfoWithConnectionOptions,
-        unparsedSecrets
-      );
-    } catch (error) {
-      log.error('Error while retrieving connection info', error);
-      return undefined;
-    }
-  }
-
-  async _migrateConnectionWithConnectionModel(
-    savedConnectionInfo: StoreConnectionInfoWithConnectionModel
-  ): Promise<MigratedStoreConnectionInfoWithConnectionOptions | undefined> {
-    // Transform a raw connection model from storage to an ampersand model.
-    const newConnectionInfoWithSecrets = convertConnectionModelToInfo(
-      savedConnectionInfo.connectionModel
-    );
-
-    const connectionInfoWithSecrets = {
-      id: savedConnectionInfo.id,
-      name: savedConnectionInfo.name,
-      storageLocation: savedConnectionInfo.storageLocation,
-      secretStorageLocation: SecretStorageLocation.SecretStorage,
-      connectionOptions: newConnectionInfoWithSecrets.connectionOptions,
-    };
-
-    await this._saveConnectionWithSecrets(connectionInfoWithSecrets);
-    return connectionInfoWithSecrets;
-  }
-
-  async _migrateConnectionWithKeytarSecrets(
-    savedConnectionInfo: StoreConnectionInfoWithConnectionOptions
-  ): Promise<MigratedStoreConnectionInfoWithConnectionOptions | undefined> {
-    // If the Keytar module is not available, we simply mark the connections
-    // storage as Keytar and return
-    if (!ext.keytarModule) {
-      log.error('Could not migrate Keytar secrets, module not found');
-      return await this._storageController.saveConnection<MigratedStoreConnectionInfoWithConnectionOptions>(
-        {
-          ...savedConnectionInfo,
-          secretStorageLocation: SecretStorageLocation.KeytarSecondAttempt,
-        }
-      );
-    }
-
-    // If there is nothing in keytar, we will save an empty object as secrets in
-    // new storage and mark this connection as migrated
-    const keytarSecrets =
-      (await ext.keytarModule.getPassword(
-        this._serviceName,
-        savedConnectionInfo.id
-      )) || '{}';
-
-    const migratedConnectionInfoWithSecrets =
-      this._mergedConnectionInfoWithSecrets(
-        {
-          ...savedConnectionInfo,
-          secretStorageLocation: SecretStorageLocation.SecretStorage,
-        },
-        keytarSecrets
-      );
-
-    await this._saveConnectionWithSecrets(migratedConnectionInfoWithSecrets);
-
-    return migratedConnectionInfoWithSecrets;
-  }
-
-  _mergedConnectionInfoWithSecrets<
-    T extends StoreConnectionInfoWithConnectionOptions
-  >(connectionInfo: T, unparsedSecrets: string) {
-    if (!unparsedSecrets) {
-      return connectionInfo;
-    }
-
-    const secrets = JSON.parse(unparsedSecrets);
-    const connectionInfoWithSecrets = mergeSecrets(
-      {
-        id: connectionInfo.id,
-        connectionOptions: connectionInfo.connectionOptions,
-      },
-      secrets
-    );
-
-    return {
-      ...connectionInfo,
-      connectionOptions: connectionInfoWithSecrets.connectionOptions,
-    };
   }
 
   async connectWithURI(): Promise<boolean> {
@@ -395,33 +186,44 @@ export default class ConnectionController {
 
     log.info('connectWithURI command called');
 
+    const cancellationToken = new vscode.CancellationTokenSource();
+    this._connectionStringInputCancellationToken = cancellationToken;
+
     try {
-      connectionString = await vscode.window.showInputBox({
-        value: '',
-        ignoreFocusOut: true,
-        placeHolder:
-          'e.g. mongodb+srv://username:password@cluster0.mongodb.net/admin',
-        prompt: 'Enter your connection string (SRV or standard)',
-        validateInput: (uri: string) => {
-          if (
-            !uri.startsWith('mongodb://') &&
-            !uri.startsWith('mongodb+srv://')
-          ) {
-            return 'MongoDB connection strings begin with "mongodb://" or "mongodb+srv://"';
-          }
+      connectionString = await vscode.window.showInputBox(
+        {
+          value: '',
+          ignoreFocusOut: true,
+          placeHolder:
+            'e.g. mongodb+srv://username:password@cluster0.mongodb.net/admin',
+          prompt: 'Enter your connection string (SRV or standard)',
+          validateInput: (uri: string) => {
+            if (
+              !uri.startsWith('mongodb://') &&
+              !uri.startsWith('mongodb+srv://')
+            ) {
+              return 'MongoDB connection strings begin with "mongodb://" or "mongodb+srv://"';
+            }
 
-          try {
-            // eslint-disable-next-line no-new
-            new ConnectionString(uri);
-          } catch (error) {
-            return formatError(error).message;
-          }
+            try {
+              // eslint-disable-next-line no-new
+              new ConnectionString(uri);
+            } catch (error) {
+              return formatError(error).message;
+            }
 
-          return null;
+            return null;
+          },
         },
-      });
+        cancellationToken.token
+      );
     } catch (e) {
       return false;
+    } finally {
+      if (this._connectionStringInputCancellationToken === cancellationToken) {
+        this._connectionStringInputCancellationToken.dispose();
+        this._connectionStringInputCancellationToken = null;
+      }
     }
 
     if (!connectionString) {
@@ -449,15 +251,13 @@ export default class ConnectionController {
     );
 
     try {
-      const connectResult = await this.saveNewConnectionFromFormAndConnect(
-        {
-          id: uuidv4(),
-          connectionOptions: {
-            connectionString: connectionStringData.toString(),
-          },
+      const connectResult = await this.saveNewConnectionAndConnect({
+        connectionId: uuidv4(),
+        connectionOptions: {
+          connectionString: connectionStringData.toString(),
         },
-        ConnectionTypes.CONNECTION_STRING
-      );
+        connectionType: ConnectionTypes.CONNECTION_STRING,
+      });
 
       return connectResult.successfullyConnected;
     } catch (error) {
@@ -480,83 +280,50 @@ export default class ConnectionController {
     );
   }
 
-  parseNewConnection(
-    rawConnectionModel: LegacyConnectionModel
-  ): ConnectionInfoFromLegacyDS {
-    return convertConnectionModelToInfo({
-      ...rawConnectionModel,
-      appname: `${packageJSON.name} ${packageJSON.version}`, // Override the default connection appname.
+  async saveNewConnectionAndConnect({
+    connectionOptions,
+    connectionId,
+    connectionType,
+  }: {
+    connectionOptions: ConnectionOptions;
+    connectionId: string;
+    connectionType: ConnectionTypes;
+  }): Promise<ConnectionAttemptResult> {
+    const connection = this._connectionStorage.createNewConnection({
+      connectionId,
+      connectionOptions,
     });
+
+    await this._connectionStorage.saveConnection(connection);
+
+    this._connections[connection.id] = cloneDeep(connection);
+
+    return this._connect(connection.id, connectionType);
   }
 
-  private async _saveConnectionWithSecrets(
-    newStoreConnectionInfoWithSecrets: MigratedStoreConnectionInfoWithConnectionOptions
-  ): Promise<MigratedStoreConnectionInfoWithConnectionOptions> {
-    // We don't want to store secrets to disc.
-    const { connectionInfo: safeConnectionInfo, secrets } = extractSecrets(
-      newStoreConnectionInfoWithSecrets as ConnectionInfoFromLegacyDS
-    );
-    const savedConnectionInfo = await this._storageController.saveConnection({
-      ...newStoreConnectionInfoWithSecrets,
-      connectionOptions: safeConnectionInfo.connectionOptions, // The connection info without secrets.
-    });
-    await this._storageController.setSecret(
-      savedConnectionInfo.id,
-      JSON.stringify(secrets)
-    );
-
-    return savedConnectionInfo;
-  }
-
-  async saveNewConnectionFromFormAndConnect(
-    originalConnectionInfo: ConnectionInfoFromLegacyDS,
-    connectionType: ConnectionTypes
-  ): Promise<ConnectionAttemptResult> {
-    const name = getConnectionTitle(originalConnectionInfo);
-    const newConnectionInfo = {
-      id: originalConnectionInfo.id,
-      name,
-      // To begin we just store it on the session, the storage controller
-      // handles changing this based on user preference.
-      storageLocation: StorageLocation.NONE,
-      secretStorageLocation: SecretStorageLocation.SecretStorage,
-      connectionOptions: originalConnectionInfo.connectionOptions,
-    };
-
-    const savedConnectionInfo = await this._saveConnectionWithSecrets(
-      newConnectionInfo
-    );
-
-    this._connections[savedConnectionInfo.id] = {
-      ...savedConnectionInfo,
-      connectionOptions: originalConnectionInfo.connectionOptions, // The connection options with secrets.
-    };
-
-    log.info('Connect called to connect to instance', savedConnectionInfo.name);
-
-    return this._connect(savedConnectionInfo.id, connectionType);
-  }
-
-  async _connectWithDataService(
-    connectionOptions: ConnectionOptionsFromLegacyDS
-  ) {
-    return connect({
-      connectionOptions:
-        launderConnectionOptionTypeFromLegacyToCurrent(connectionOptions),
-      productName: packageJSON.name,
-      productDocsLink: LINKS.extensionDocs(),
-    });
-  }
-
+  // eslint-disable-next-line complexity
   async _connect(
     connectionId: string,
     connectionType: ConnectionTypes
   ): Promise<ConnectionAttemptResult> {
-    // Store a version of this connection, so we can see when the conection
-    // is successful if it is still the most recent connection attempt.
-    this._connectingVersion = connectionId;
-    const connectingAttemptVersion = this._connectingVersion;
-    this._connecting = true;
+    log.info(
+      'Connect called to connect to instance',
+      this._connections[connectionId]?.name || 'empty connection name'
+    );
+
+    // Cancel the current connection attempt if we're connecting.
+    this._connectionAttempt?.cancelConnectionAttempt();
+
+    const connectionAttempt = createConnectionAttempt({
+      connectFn: (connectionConfig) =>
+        connect({
+          ...connectionConfig,
+          productName: packageJSON.name,
+          productDocsLink: LINKS.extensionDocs(),
+        }),
+      logger: Object.assign(log, { mongoLogId }),
+    });
+    this._connectionAttempt = connectionAttempt;
     this._connectingConnectionId = connectionId;
     this.eventEmitter.emit(DataServiceEventTypes.CONNECTIONS_DID_CHANGE);
 
@@ -567,6 +334,22 @@ export default class ConnectionController {
       await this.disconnect();
     }
 
+    if (connectionAttempt.isClosed()) {
+      return {
+        successfullyConnected: false,
+        connectionErrorMessage: 'connection attempt cancelled',
+      };
+    }
+
+    const connectionInfo: LoadedConnection = merge(
+      cloneDeep(this._connections[connectionId]),
+      this.connectionMergeInfos[connectionId] ?? {}
+    );
+
+    if (!connectionInfo.connectionOptions) {
+      throw new Error('Connect failed: connectionOptions are missing.');
+    }
+
     this._statusView.showMessage('Connecting to MongoDB...');
     log.info('Connecting to MongoDB...', {
       connectionInfo: JSON.stringify(
@@ -574,49 +357,75 @@ export default class ConnectionController {
       ),
     });
 
-    const connectionOptions = this._connections[connectionId].connectionOptions;
-
-    if (!connectionOptions) {
-      throw new Error('Connect failed: connectionOptions are missing.');
-    }
-
     let dataService;
-    let connectError;
-
     try {
-      dataService = await this._connectWithDataService(connectionOptions);
+      const notifyDeviceFlow = getNotifyDeviceFlowForConnectionAttempt(
+        connectionInfo.connectionOptions
+      );
+
+      const connectionOptions = adjustConnectionOptionsBeforeConnect({
+        connectionOptions: connectionInfo.connectionOptions,
+        defaultAppName: packageJSON.name,
+        notifyDeviceFlow,
+        preferences: {
+          forceConnectionOptions: [],
+          browserCommandForOIDCAuth: undefined, // We overwrite this below.
+        },
+      });
+      const browserAuthCommand = vscode.workspace
+        .getConfiguration('mdb')
+        .get('browserCommandForOIDCAuth');
+      dataService = await connectionAttempt.connect({
+        ...connectionOptions,
+        oidc: {
+          ...cloneDeep(connectionOptions.oidc),
+          openBrowser: browserAuthCommand
+            ? { command: browserAuthCommand }
+            : async ({ signal, url }) => {
+                try {
+                  await openLink(url);
+                } catch (err) {
+                  if (signal.aborted) return;
+                  // If opening the link fails we default to regular link opening.
+                  await vscode.commands.executeCommand(
+                    'vscode.open',
+                    vscode.Uri.parse(url)
+                  );
+                }
+              },
+        },
+      });
+
+      if (!dataService || connectionAttempt.isClosed()) {
+        return {
+          successfullyConnected: false,
+          connectionErrorMessage: 'connection attempt cancelled',
+        };
+      }
     } catch (error) {
-      connectError = error;
-    }
-
-    const shouldEndPrevConnectAttempt = this._endPrevConnectAttempt({
-      connectionId,
-      connectingAttemptVersion,
-      dataService,
-    });
-
-    if (shouldEndPrevConnectAttempt) {
-      return {
-        successfullyConnected: false,
-        connectionErrorMessage: 'connection attempt overriden',
-      };
-    }
-
-    this._statusView.hideMessage();
-
-    if (connectError) {
-      this._connecting = false;
-      this.eventEmitter.emit(DataServiceEventTypes.CONNECTIONS_DID_CHANGE);
-
-      throw connectError;
+      throw error;
+    } finally {
+      if (
+        this._connectionAttempt === connectionAttempt &&
+        this._connectingConnectionId === connectionId
+      ) {
+        // When this is still the most recent connection attempt cleanup the connecting messages.
+        this._statusView.hideMessage();
+        this._connectionAttempt = null;
+        this._connectingConnectionId = null;
+        this.eventEmitter.emit(DataServiceEventTypes.CONNECTIONS_DID_CHANGE);
+      }
     }
 
     log.info('Successfully connected', { connectionId });
     void vscode.window.showInformationMessage('MongoDB connection successful.');
 
+    dataService.addReauthenticationHandler(
+      this._reauthenticationHandler.bind(this)
+    );
     this._activeDataService = dataService;
     this._currentConnectionId = connectionId;
-    this._connecting = false;
+    this._connectionAttempt = null;
     this._connectingConnectionId = null;
     this.eventEmitter.emit(DataServiceEventTypes.CONNECTIONS_DID_CHANGE);
     this.eventEmitter.emit(DataServiceEventTypes.ACTIVE_CONNECTION_CHANGED);
@@ -630,39 +439,109 @@ export default class ConnectionController {
       true
     );
 
+    void vscode.commands.executeCommand(
+      'setContext',
+      'mdb.isAtlasStreams',
+      this.isConnectedToAtlasStreams()
+    );
+
+    void this.onConnectSuccess({
+      connectionInfo,
+      dataService,
+    });
+
     return {
       successfullyConnected: true,
       connectionErrorMessage: '',
     };
   }
 
-  private _endPrevConnectAttempt({
-    connectionId,
-    connectingAttemptVersion,
-    dataService,
-  }: {
-    connectionId: string;
-    connectingAttemptVersion: null | string;
-    dataService: DataService | null;
-  }): boolean {
-    if (
-      connectingAttemptVersion !== this._connectingVersion ||
-      !this._connections[connectionId]
-    ) {
-      // If the current attempt is no longer the most recent attempt
-      // or the connection no longer exists we silently end the connection
-      // and return.
-      void dataService?.disconnect().catch(() => {
-        /* ignore */
-      });
+  // Used to re-authenticate with OIDC.
+  async _reauthenticationHandler() {
+    const removeConfirmationResponse =
+      await vscode.window.showInformationMessage(
+        'You need to re-authenticate to the database in order to continue.',
+        { modal: true },
+        'Confirm'
+      );
 
-      return true;
+    if (removeConfirmationResponse !== 'Confirm') {
+      await this.disconnect();
+      throw new Error('Reauthentication declined by user');
     }
-
-    return false;
   }
 
-  async connectWithConnectionId(connectionId: string): Promise<boolean> {
+  private async onConnectSuccess({
+    connectionInfo,
+    dataService,
+  }: {
+    connectionInfo: LoadedConnection;
+    dataService: DataService;
+  }) {
+    if (connectionInfo.storageLocation === 'NONE') {
+      return;
+    }
+
+    let mergeConnectionInfo: LoadedConnection | {} = {};
+    if (vscode.workspace.getConfiguration('mdb').get('persistOIDCTokens')) {
+      mergeConnectionInfo = {
+        connectionOptions: await dataService.getUpdatedSecrets(),
+      };
+      this.connectionMergeInfos[connectionInfo.id] = merge(
+        cloneDeep(this.connectionMergeInfos[connectionInfo.id]),
+        mergeConnectionInfo
+      );
+    }
+
+    await this._connectionStorage.saveConnection({
+      ...merge(
+        this._connections[connectionInfo.id] ?? connectionInfo,
+        mergeConnectionInfo
+      ),
+    });
+
+    // ?. because mocks in tests don't provide it
+    dataService.on?.('connectionInfoSecretsChanged', () => {
+      void (async () => {
+        try {
+          if (
+            !vscode.workspace.getConfiguration('mdb').get('persistOIDCTokens')
+          ) {
+            return;
+          }
+          // Get updated secrets first (and not in parallel) so that the
+          // race condition window between load() and save() is as short as possible.
+          const mergeConnectionInfo = {
+            connectionOptions: await dataService.getUpdatedSecrets(),
+          };
+          if (!mergeConnectionInfo) return;
+          this.connectionMergeInfos[connectionInfo.id] = merge(
+            cloneDeep(this.connectionMergeInfos[connectionInfo.id]),
+            mergeConnectionInfo
+          );
+
+          if (!this._connections[connectionInfo.id]) return;
+          await this._connectionStorage.saveConnection({
+            ...merge(this._connections[connectionInfo.id], mergeConnectionInfo),
+          });
+        } catch (err: any) {
+          log.warn(
+            'Connection Controller',
+            'Failed to update connection store with updated secrets',
+            { err: err?.stack }
+          );
+        }
+      })();
+    });
+  }
+
+  cancelConnectionAttempt() {
+    this._connectionAttempt?.cancelConnectionAttempt();
+  }
+
+  async connectWithConnectionId(
+    connectionId: string
+  ): Promise<ConnectionAttemptResult> {
     if (!this._connections[connectionId]) {
       throw new Error('Connection not found.');
     }
@@ -670,14 +549,20 @@ export default class ConnectionController {
     try {
       await this._connect(connectionId, ConnectionTypes.CONNECTION_ID);
 
-      return true;
+      return {
+        successfullyConnected: true,
+        connectionErrorMessage: '',
+      };
     } catch (error) {
       log.error('Failed to connect by a connection id', error);
       const printableError = formatError(error);
       void vscode.window.showErrorMessage(
         `Unable to connect: ${printableError.message}`
       );
-      return false;
+      return {
+        successfullyConnected: false,
+        connectionErrorMessage: '',
+      };
     }
   }
 
@@ -714,10 +599,15 @@ export default class ConnectionController {
         'mdb.connectedToMongoDB',
         false
       );
+      void vscode.commands.executeCommand(
+        'setContext',
+        'mdb.isAtlasStreams',
+        false
+      );
     } catch (error) {
       // Show an error, however we still reset the active connection to free up the extension.
       void vscode.window.showErrorMessage(
-        'An error occured while disconnecting from the current connection.'
+        'An error occurred while disconnecting from the current connection.'
       );
     }
 
@@ -727,24 +617,17 @@ export default class ConnectionController {
     return true;
   }
 
-  private async _removeSecretsFromKeychain(connectionId: string) {
-    await this._storageController.deleteSecret(connectionId);
-    // Even though we migrated to SecretStorage from keytar, we are still removing
-    // secrets from keytar to make sure that we don't leave any left-overs when a
-    // connection is removed. This block can safely be removed after our migration
-    // has been out for some time.
-    try {
-      await ext.keytarModule?.deletePassword(this._serviceName, connectionId);
-    } catch (error) {
-      log.error('Failed to remove secret from keytar', error);
-    }
-  }
-
   async removeSavedConnection(connectionId: string): Promise<void> {
+    if (
+      this._connectionAttempt &&
+      connectionId === this._connectingConnectionId
+    ) {
+      this.cancelConnectionAttempt();
+    }
+
     delete this._connections[connectionId];
 
-    await this._removeSecretsFromKeychain(connectionId);
-    this._storageController.removeConnection(connectionId);
+    await this._connectionStorage.removeConnection(connectionId);
 
     this.eventEmitter.emit(DataServiceEventTypes.CONNECTIONS_DID_CHANGE);
   }
@@ -825,6 +708,41 @@ export default class ConnectionController {
     return this.removeMongoDBConnection(connectionIdToRemove);
   }
 
+  async updateConnection({
+    connectionId,
+    connectionOptions,
+  }: {
+    connectionId: string;
+    connectionOptions: ConnectionOptions;
+  }): Promise<void> {
+    if (!this._connections[connectionId]) {
+      throw new Error('Cannot find connection to update.');
+    }
+
+    this._connections[connectionId] = {
+      ...this._connections[connectionId],
+      connectionOptions,
+    };
+    await this._connectionStorage.saveConnection(
+      this._connections[connectionId]
+    );
+  }
+
+  async updateConnectionAndConnect({
+    connectionId,
+    connectionOptions,
+  }: {
+    connectionId: string;
+    connectionOptions: ConnectionOptions;
+  }): Promise<ConnectionAttemptResult> {
+    await this.updateConnection({
+      connectionId,
+      connectionOptions,
+    });
+
+    return await this.connectWithConnectionId(connectionId);
+  }
+
   async renameConnection(connectionId: string): Promise<boolean> {
     let inputtedConnectionName: string | undefined;
 
@@ -845,7 +763,7 @@ export default class ConnectionController {
         },
       });
     } catch (e) {
-      throw new Error(`An error occured parsing the connection name: ${e}`);
+      throw new Error(`An error occurred parsing the connection name: ${e}`);
     }
 
     if (!inputtedConnectionName) {
@@ -856,7 +774,7 @@ export default class ConnectionController {
     this.eventEmitter.emit(DataServiceEventTypes.CONNECTIONS_DID_CHANGE);
     this.eventEmitter.emit(DataServiceEventTypes.ACTIVE_CONNECTION_CHANGED);
 
-    await this._storageController.saveConnection(
+    await this._connectionStorage.saveConnection(
       this._connections[connectionId]
     );
 
@@ -878,8 +796,12 @@ export default class ConnectionController {
     this.eventEmitter.removeListener(eventType, listener);
   }
 
+  closeConnectionStringInput() {
+    this._connectionStringInputCancellationToken?.cancel();
+  }
+
   isConnecting(): boolean {
-    return this._connecting;
+    return !!this._connectionAttempt;
   }
 
   isDisconnecting(): boolean {
@@ -890,7 +812,7 @@ export default class ConnectionController {
     return this._activeDataService !== null;
   }
 
-  getSavedConnections(): StoreConnectionInfo[] {
+  getSavedConnections(): LoadedConnection[] {
     return Object.values(this._connections);
   }
 
@@ -916,6 +838,20 @@ export default class ConnectionController {
     return this._connections[this._currentConnectionId]
       ? this._connections[this._currentConnectionId].name
       : '';
+  }
+
+  getConnectionConnectionOptions(
+    connectionId: string
+  ): ConnectionOptions | undefined {
+    const connectionStringWithoutAppName = new ConnectionString(
+      this._connections[connectionId]?.connectionOptions.connectionString
+    );
+    connectionStringWithoutAppName.searchParams.delete('appname');
+
+    return {
+      ...this._connections[connectionId]?.connectionOptions,
+      connectionString: connectionStringWithoutAppName.toString(),
+    };
   }
 
   _getConnectionStringWithProxy({
@@ -953,6 +889,13 @@ export default class ConnectionController {
     }
 
     return connectionStringData.toString();
+  }
+
+  isConnectedToAtlasStreams() {
+    return (
+      this.isCurrentlyConnected() &&
+      isAtlasStream(this.getActiveConnectionString())
+    );
   }
 
   getActiveConnectionString(): string {
@@ -1040,26 +983,15 @@ export default class ConnectionController {
     this._connections = {};
     this._activeDataService = null;
     this._currentConnectionId = null;
-    this._connecting = false;
+    this._connectionAttempt?.cancelConnectionAttempt();
+    this._connectionAttempt = null;
     this._disconnecting = false;
     this._connectingConnectionId = '';
-    this._connectingVersion = null;
   }
 
-  getConnectingVersion(): string | null {
-    return this._connectingVersion;
-  }
-
+  // Exposed for testing.
   setActiveDataService(newDataService: DataService): void {
     this._activeDataService = newDataService;
-  }
-
-  setConnnecting(connecting: boolean): void {
-    this._connecting = connecting;
-  }
-
-  setDisconnecting(disconnecting: boolean): void {
-    this._disconnecting = disconnecting;
   }
 
   getConnectionQuickPicks(): ConnectionQuickPicks[] {
@@ -1082,13 +1014,10 @@ export default class ConnectionController {
         },
       },
       ...Object.values(this._connections)
-        .sort(
-          (
-            connectionA: StoreConnectionInfo,
-            connectionB: StoreConnectionInfo
-          ) => (connectionA.name || '').localeCompare(connectionB.name || '')
+        .sort((connectionA: LoadedConnection, connectionB: LoadedConnection) =>
+          (connectionA.name || '').localeCompare(connectionB.name || '')
         )
-        .map((item: StoreConnectionInfo) => ({
+        .map((item: LoadedConnection) => ({
           label: item.name,
           data: {
             type: NewConnectionType.SAVED_CONNECTION,
@@ -1118,8 +1047,9 @@ export default class ConnectionController {
       return true;
     }
 
-    return this.connectWithConnectionId(
+    const { successfullyConnected } = await this.connectWithConnectionId(
       selectedQuickPickItem.data.connectionId
     );
+    return successfullyConnected;
   }
 }
